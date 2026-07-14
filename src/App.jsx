@@ -7,6 +7,7 @@ import PetaniPage from "@/pages/PetaniPage";
 import MitraPage from "@/pages/MitraPage";
 import CompanyPage from "@/pages/CompanyPage";
 import AdminPage from "@/pages/AdminPage";
+import MarketplacePage from "@/pages/MarketplacePage";
 
 // Import Komponen shadcn/ui untuk Form Login
 import { Button } from "@/components/ui/button";
@@ -113,6 +114,7 @@ export default function App() {
           <Route path="/mitra" element={<ProtectedRoute allowedRole="mitra"><MitraPage /></ProtectedRoute>} />
           <Route path="/company" element={<ProtectedRoute allowedRole="company"><CompanyPage /></ProtectedRoute>} />
           <Route path="/admin" element={<ProtectedRoute allowedRole="admin"><AdminPage /></ProtectedRoute>} />
+          <Route path="/marketplace" element={<MarketplacePage />} /> 
 
           {/* Fallback jika route salah */}
           <Route path="*" element={<Navigate to="/" replace />} />
