@@ -1,388 +1,341 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { db } from "@/config/firebase";
-import { collection, query, onSnapshot, doc, updateDoc, where } from "firebase/firestore";
-import { ShieldAlert, CheckCircle, Clock, DollarSign, RefreshCw, LogOut, ArrowUpRight, Users, UserCheck, UserX, AlertTriangle, Building2, Sprout, Factory, CreditCard, Phone, MapPin, Search } from "lucide-react";
+import { collection, query, onSnapshot, doc, updateDoc } from "firebase/firestore";
+import { 
+  LayoutDashboard, Wallet, UserCheck, Menu, X, LogOut, 
+  Search, CheckCircle2, RefreshCw, Phone, MapPin, 
+  CreditCard, ShieldCheck, Sprout, Factory
+} from "lucide-react";
+import toast from "react-hot-toast";
 
 export default function AdminPage() {
   const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState("escrow"); // 'escrow' | 'users'
+  
+  const [activeMenu, setActiveMenu] = useState("overview"); 
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [loadingId, setLoadingId] = useState(null);
 
-  // State Data Real-time
   const [allOrders, setAllOrders] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [userSearchTerm, setUserSearchTerm] = useState("");
-  const [filterRole, setFilterRole] = useState("Semua"); // 'Semua' | 'petani' | 'mitra'
+  const [filterRole, setFilterRole] = useState("Semua"); 
 
-  // 1. REAL-TIME READ: Ambil SEMUA pesanan dari Firestore
   useEffect(() => {
     const q = query(collection(db, "orders"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       items.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       setAllOrders(items);
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. REAL-TIME READ: Ambil SEMUA pengguna (Petani & Mitra) untuk verifikasi
   useEffect(() => {
     const q = query(collection(db, "users"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      // Hanya ambil yang rolenya petani atau mitra (sembunyikan sesama admin)
-      const sellers = items.filter((u) => u.role === "petani" || u.role === "mitra");
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const sellers = items.filter(u => u.role === "petani" || u.role === "mitra");
       setAllUsers(sellers);
     });
     return () => unsubscribe();
   }, []);
 
-  // --- KALKULASI STATISTIK ---
   const totalEscrowHold = allOrders
-    .filter((o) => o.status === "PAID_ESCROW" || o.status === "CARGO_DELIVERED")
+    .filter(o => ["PAID_ESCROW", "SHIPPED", "CARGO_DELIVERED"].includes(o.status))
     .reduce((acc, curr) => acc + (curr.totalPrice || 0), 0);
 
   const totalReleased = allOrders
-    .filter((o) => o.status === "ESCROW_RELEASED")
+    .filter(o => o.status === "ESCROW_RELEASED")
     .reduce((acc, curr) => acc + (curr.totalPrice || 0), 0);
 
-  const pendingVerificationsCount = allUsers.filter((u) => u.verificationStatus === "pending").length;
+  const pendingVerificationsCount = allUsers.filter(u => u.verificationStatus === "pending").length;
 
-  // --- AKSI ADMIN: VERIFIKASI PENGGUNA ---
   const handleVerifyUser = async (targetUser, newStatus) => {
-    const actionText = newStatus === "verified" ? "SETUJUI / VERIFIKASI" : "TOLAK";
-    const konfirmasi = window.confirm(
-      `${actionText} AKUN INI?\n\nNama: ${targetUser.displayName || targetUser.email}\nRole: ${targetUser.role.toUpperCase()}\n\n${
-        newStatus === "verified"
-          ? "Akun ini akan DIIZINKAN mengupload komoditas ke Marketplace."
-          : "Akun ini TIDAK AKAN BISA berjualan sampai melengkapi data."
-      }`
-    );
-    if (!konfirmasi) return;
+    const actionText = newStatus === "verified" ? "Setujui" : "Tolak";
+    if (!window.confirm(`Yakin ingin ${actionText} akun ${targetUser.displayName}?`)) return;
 
     setLoadingId(targetUser.id);
+    const toastId = toast.loading("Memperbarui...");
     try {
       await updateDoc(doc(db, "users", targetUser.id), {
-        verificationStatus: newStatus, // 'verified' | 'rejected' | 'unverified'
+        verificationStatus: newStatus,
         verifiedAt: newStatus === "verified" ? new Date() : null,
-        verifiedBy: newStatus === "verified" ? (user?.email || "Admin Platform") : null,
       });
-      alert(`✅ Akun berhasil diubah statusnya menjadi: ${newStatus.toUpperCase()}`);
-    } catch (error) {
-      alert("Gagal mengubah status verifikasi pengguna.");
-    } finally {
-      setLoadingId(null);
-    }
+      toast.success(`Akun: ${newStatus.toUpperCase()}`, { id: toastId });
+    } catch (error) { toast.error("Gagal mengubah status.", { id: toastId }); } 
+    finally { setLoadingId(null); }
   };
 
-  // --- AKSI ADMIN: CAIRKAN ESCROW ---
   const handleReleaseEscrow = async (order) => {
-    if (!window.confirm(`CAIRKAN DANA ESCROW?\n\nPenerima: ${order.farmerName}\nNominal: Rp ${order.totalPrice?.toLocaleString("id-ID")}\n\nPastikan transfer ke rekening bank terkait telah berhasil.`)) return;
+    if (!window.confirm(`Cairkan Rp ${order.totalPrice?.toLocaleString()} ke ${order.farmerName}?`)) return;
+    
     setLoadingId(order.id);
+    const toastId = toast.loading("Mencairkan dana...");
     try {
-      await updateDoc(doc(db, "orders", order.id), {
-        status: "ESCROW_RELEASED",
-        releasedAt: new Date(),
-        releasedBy: user?.email || "Admin Platform",
-      });
-      alert("🎉 Dana Escrow berhasil dicairkan! Status transaksi selesai.");
-    } catch (error) { alert("Gagal mencairkan dana."); } 
+      await updateDoc(doc(db, "orders", order.id), { status: "ESCROW_RELEASED", releasedAt: new Date() });
+      toast.success("Dana cair!", { id: toastId });
+    } catch (error) { toast.error("Gagal mencairkan.", { id: toastId }); } 
     finally { setLoadingId(null); }
   };
 
-  // --- AKSI ADMIN: BATALKAN PESANAN ---
-  const handleCancelAndRefund = async (order) => {
-    if (!window.confirm("Batalkan pesanan ini? Status barang akan dikembalikan menjadi 'Tersedia' di Marketplace.")) return;
+  const handleCancelOrder = async (order) => {
+    if (!window.confirm("Batalkan pesanan ini?")) return;
+    
     setLoadingId(order.id);
+    const toastId = toast.loading("Membatalkan...");
     try {
-      await updateDoc(doc(db, "orders", order.id), { status: "CANCELLED_REFUNDED", cancelledAt: new Date() });
-      if (order.productId) await updateDoc(doc(db, "products", order.productId), { status: "tersedia", bookedBy: null, bookedByName: null });
-      alert("Pesanan dibatalkan. Komoditas dikembalikan ke etalase publik.");
-    } catch (error) { alert("Gagal membatalkan pesanan."); } 
+      await updateDoc(doc(db, "orders", order.id), { status: "CANCELLED", cancelledAt: new Date() });
+      if (order.productId) await updateDoc(doc(db, "products", order.productId), { status: "tersedia", bookedBy: null });
+      toast.success("Dibatalkan.", { id: toastId });
+    } catch (error) { toast.error("Gagal.", { id: toastId }); } 
     finally { setLoadingId(null); }
   };
 
-  // Filter Pengguna di Tab Verifikasi
-  const filteredUsers = allUsers.filter((u) => {
+  const filteredUsers = allUsers.filter(u => {
     const matchRole = filterRole === "Semua" || u.role === filterRole;
-    const matchSearch =
-      u.displayName?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
-      u.email?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
-      u.rekening_bank?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
-      u.alamat_lahan?.toLowerCase().includes(userSearchTerm.toLowerCase());
+    const matchSearch = (u.displayName?.toLowerCase() || "").includes(userSearchTerm.toLowerCase()) || 
+                        (u.email?.toLowerCase() || "").includes(userSearchTerm.toLowerCase());
     return matchRole && matchSearch;
   });
 
+  const SidebarItem = ({ id, icon: Icon, label, badge }) => (
+    <button
+      onClick={() => { setActiveMenu(id); setIsMobileSidebarOpen(false); }}
+      className={`w-full flex items-center justify-between px-3 py-2 mb-1 rounded-lg text-sm font-medium transition-colors ${
+        activeMenu === id 
+          ? "bg-slate-800 text-white" 
+          : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+      }`}
+    >
+      <div className="flex items-center gap-3"><Icon className="w-4 h-4" /> {label}</div>
+      {badge > 0 && <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-600 text-white">{badge}</span>}
+    </button>
+  );
+
+  const StatusBadge = ({ status }) => {
+    switch (status) {
+      case "WAITING_PAYMENT_SIMULATION": return <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold uppercase">Menunggu Bayar</span>;
+      case "PAID_ESCROW": return <span className="px-2 py-1 rounded bg-blue-50 text-blue-600 text-[10px] font-bold uppercase">Dana Escrow</span>;
+      case "SHIPPED": return <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-600 text-[10px] font-bold uppercase">Dikirim</span>;
+      case "CARGO_DELIVERED": return <span className="px-2 py-1 rounded bg-purple-50 text-purple-700 text-[10px] font-bold uppercase">Kargo Tiba</span>;
+      case "ESCROW_RELEASED": return <span className="px-2 py-1 rounded bg-green-50 text-green-600 text-[10px] font-bold uppercase">Selesai (Cair)</span>;
+      case "CANCELLED": return <span className="px-2 py-1 rounded bg-red-50 text-red-600 text-[10px] font-bold uppercase">Dibatalkan</span>;
+      default: return <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold uppercase">{status}</span>;
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col">
-      {/* HEADER NAVBAR */}
-      <header className="bg-slate-950 border-b border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 z-30">
-        <div className="flex items-center gap-2.5">
-          <ShieldAlert className="w-6 h-6 text-rose-500" />
-          <span className="font-black text-lg tracking-wide text-white">TaniBioCarbon <span className="text-rose-500 font-normal">| Admin Central Control</span></span>
+    <div className="flex w-full h-full bg-slate-50 font-sans text-slate-900">
+      
+      {/* MOBILE OVERLAY */}
+      {isMobileSidebarOpen && <div className="fixed inset-0 bg-slate-900/50 z-40 lg:hidden" onClick={() => setIsMobileSidebarOpen(false)} />}
+
+      {/* COMPACT SIDEBAR */}
+      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-950 flex flex-col transition-transform duration-200 lg:translate-x-0 lg:static lg:flex ${isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-800">
+          <div className="flex items-center gap-2 text-white">
+            <ShieldCheck className="w-5 h-5 text-blue-400" />
+            <span className="font-bold text-sm tracking-wide">Admin Dashboard</span>
+          </div>
+          <button className="lg:hidden text-slate-400" onClick={() => setIsMobileSidebarOpen(false)}><X className="w-5 h-5" /></button>
         </div>
-        <button onClick={logout} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm flex items-center gap-1.5 transition text-rose-300 font-bold">
-          <LogOut className="w-4 h-4" /> Keluar
-        </button>
-      </header>
 
-      {/* TAB NAVIGATION ADMIN */}
-      <div className="bg-slate-950 border-b border-slate-800 px-6 flex gap-6 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab("escrow")}
-          className={`py-4 font-bold text-sm flex items-center gap-2 border-b-2 whitespace-nowrap transition ${
-            activeTab === "escrow" ? "border-rose-500 text-rose-400" : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <DollarSign className="w-4 h-4" /> Monitoring Transaksi & Escrow ({allOrders.length})
-        </button>
-        <button
-          onClick={() => setActiveTab("users")}
-          className={`py-4 font-bold text-sm flex items-center gap-2 border-b-2 whitespace-nowrap transition relative ${
-            activeTab === "users" ? "border-rose-500 text-rose-400" : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Users className="w-4 h-4" /> Verifikasi Akun Pemasok ({allUsers.length})
-          {pendingVerificationsCount > 0 && (
-            <span className="bg-amber-500 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full animate-bounce">
-              {pendingVerificationsCount} Baru
-            </span>
-          )}
-        </button>
-      </div>
+        <div className="flex-1 overflow-y-auto py-4 px-3">
+          <p className="text-[10px] font-bold text-slate-500 uppercase px-3 mb-2">Menu</p>
+          <SidebarItem id="overview" icon={LayoutDashboard} label="Overview" />
+          <SidebarItem id="escrow" icon={Wallet} label="Transaksi Escrow" />
+          <SidebarItem id="verification" icon={UserCheck} label="Verifikasi Akun" badge={pendingVerificationsCount} />
+        </div>
 
-      {/* KONTEN UTAMA */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-6">
+        <div className="p-3 border-t border-slate-800">
+          <button onClick={logout} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
+            <LogOut className="w-4 h-4" /> Keluar
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN AREA */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
         
-        {/* KARTU STATISTIK GLOBAL (SELALU MUNCUL) */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-slate-800/80 border border-slate-700 p-5 rounded-2xl">
-            <div className="flex justify-between items-center text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Dana Tertahan (Escrow Hold)</span>
-              <Clock className="w-5 h-5 text-amber-400" />
-            </div>
-            <p className="text-2xl font-black text-amber-400">Rp {totalEscrowHold.toLocaleString("id-ID")}</p>
-            <span className="text-[11px] text-slate-400 mt-1 block">Siap dicairkan saat kargo diverifikasi</span>
+        {/* COMPACT HEADER */}
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-30">
+          <div className="flex items-center gap-3">
+            <button className="lg:hidden text-slate-500 hover:text-slate-900" onClick={() => setIsMobileSidebarOpen(true)}><Menu className="w-5 h-5" /></button>
+            <h1 className="text-base font-semibold text-slate-800">
+              {activeMenu === "overview" ? "Overview" : activeMenu === "escrow" ? "Transaksi Escrow" : "Verifikasi Akun"}
+            </h1>
           </div>
+          <div className="text-xs font-medium text-slate-500">{user?.email}</div>
+        </header>
 
-          <div className="bg-slate-800/80 border border-slate-700 p-5 rounded-2xl">
-            <div className="flex justify-between items-center text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Total Dicairkan ke Pemasok</span>
-              <CheckCircle className="w-5 h-5 text-green-400" />
-            </div>
-            <p className="text-2xl font-black text-green-400">Rp {totalReleased.toLocaleString("id-ID")}</p>
-            <span className="text-[11px] text-slate-400 mt-1 block">Akumulasi payout sukses</span>
-          </div>
+        {/* CONTENT */}
+        <main className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-5xl mx-auto space-y-6">
 
-          <div className="bg-slate-800/80 border border-slate-700 p-5 rounded-2xl">
-            <div className="flex justify-between items-center text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Antrean Verifikasi Pemasok</span>
-              <UserCheck className="w-5 h-5 text-blue-400" />
-            </div>
-            <p className="text-2xl font-black text-white">{pendingVerificationsCount} <span className="text-sm font-normal text-slate-400">Menunggu</span></p>
-            <span className="text-[11px] text-slate-400 mt-1 block">Periksa rekening bank sebelum izin jual</span>
-          </div>
-        </div>
+            {/* TAB: OVERVIEW */}
+            {activeMenu === "overview" && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <span className="text-xs text-slate-500 font-medium mb-1">Dana Escrow (Tertahan)</span>
+                    <span className="text-xl font-bold text-slate-800">Rp {totalEscrowHold.toLocaleString()}</span>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <span className="text-xs text-slate-500 font-medium mb-1">Total Pencairan Sukses</span>
+                    <span className="text-xl font-bold text-green-600">Rp {totalReleased.toLocaleString()}</span>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <span className="text-xs text-slate-500 font-medium mb-1">Verifikasi Menunggu</span>
+                    <span className="text-xl font-bold text-amber-600">{pendingVerificationsCount} Akun</span>
+                  </div>
+                </div>
 
-        {/* =========================================================================
-            TAB 1: MONITORING TRANSAKSI & ESCROW
-           ========================================================================= */}
-        {activeTab === "escrow" && (
-          <div className="bg-slate-800/50 border border-slate-700 rounded-2xl overflow-hidden shadow-xl">
-            <div className="p-5 border-b border-slate-700 flex justify-between items-center bg-slate-800">
-              <h2 className="font-bold text-base text-white flex items-center gap-2">
-                <RefreshCw className="w-4 h-4 text-green-400 animate-spin-slow" /> Aliran Transaksi & Log Escrow
-              </h2>
-              <span className="text-xs font-mono text-slate-400">Live Sync Active</span>
-            </div>
+                <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
+                    <h3 className="font-semibold text-sm text-slate-800">Transaksi Terbaru</h3>
+                    <button onClick={()=>setActiveMenu("escrow")} className="text-xs text-blue-600 font-medium hover:underline">Lihat Semua</button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-slate-50 text-slate-500 text-xs border-b border-slate-100">
+                        <tr><th className="px-5 py-3 font-medium">ID</th><th className="px-5 py-3 font-medium">Produk</th><th className="px-5 py-3 font-medium">Nominal</th><th className="px-5 py-3 font-medium">Status</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {allOrders.slice(0, 5).map(o => (
+                          <tr key={o.id} className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-mono text-xs text-slate-500">{o.id.slice(0,8)}</td>
+                            <td className="px-5 py-3 text-slate-800">{o.productName} <span className="text-slate-400 text-xs">({o.totalTon}t)</span></td>
+                            <td className="px-5 py-3 font-semibold text-slate-700">Rp {o.totalPrice?.toLocaleString()}</td>
+                            <td className="px-5 py-3"><StatusBadge status={o.status} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
 
-            {allOrders.length === 0 ? (
-              <div className="text-center py-16 text-slate-400">Belum ada transaksi di dalam sistem platform.</div>
-            ) : (
-              <div className="divide-y divide-slate-700/60">
-                {allOrders.map((order) => {
-                  const isProcessing = loadingId === order.id;
-                  return (
-                    <div key={order.id} className="p-5 hover:bg-slate-800/80 transition flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
-                            TRX: {order.id.slice(0, 8)}
-                          </span>
-                          <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded uppercase tracking-wider ${
-                            order.status === "CARGO_DELIVERED" ? "bg-purple-900/80 text-purple-300 border border-purple-500 animate-pulse" :
-                            order.status === "ESCROW_RELEASED" ? "bg-green-900/80 text-green-300" :
-                            order.status === "PAID_ESCROW" ? "bg-blue-900/80 text-blue-300" : "bg-slate-700 text-slate-300"
-                          }`}>
-                            {order.status}
-                          </span>
-                        </div>
-                        <h4 className="text-base font-bold text-white mt-1">{order.productName} ({order.totalTon} Ton)</h4>
-                        <p className="text-xs text-slate-300">
-                          Pemasok: <span className="text-green-400 font-semibold">{order.farmerName}</span> {" ──> "} Pembeli: <span className="text-blue-400 font-semibold">{order.buyerName}</span>
-                        </p>
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto border-t lg:border-t-0 pt-3 lg:pt-0 border-slate-700/60">
-                        <div className="text-left lg:text-right">
-                          <span className="text-[10px] text-slate-400 uppercase font-bold block">Nominal Escrow</span>
-                          <span className="text-base font-black text-white">Rp {order.totalPrice?.toLocaleString("id-ID")}</span>
-                        </div>
-
-                        <div className="flex gap-2 w-full sm:w-auto">
-                          {order.status === "CARGO_DELIVERED" && (
-                            <button
-                              disabled={isProcessing}
-                              onClick={() => handleReleaseEscrow(order)}
-                              className="bg-green-600 hover:bg-green-500 text-white font-black px-4 py-2 rounded-xl text-xs transition shadow-lg shadow-green-900/30 flex items-center gap-1.5 shrink-0"
-                            >
-                              <ArrowUpRight className="w-4 h-4" /> Cairkan ke Rekening Pemasok
-                            </button>
-                          )}
-                          {(order.status === "WAITING_PAYMENT_SIMULATION" || order.status === "PAID_ESCROW") && (
-                            <button
-                              disabled={isProcessing}
-                              onClick={() => handleCancelAndRefund(order)}
-                              className="bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700 font-bold px-3 py-2 rounded-xl text-xs transition shrink-0"
-                            >
-                              Batalkan / Refund
-                            </button>
-                          )}
-                          {order.status === "ESCROW_RELEASED" && (
-                            <span className="text-xs font-mono text-green-400 bg-green-950/50 px-3 py-2 rounded-xl border border-green-800/60">
-                              ✔ Payout Selesai
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+            {/* TAB: ESCROW */}
+            {activeMenu === "escrow" && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-slate-400" />
+                  <h2 className="font-semibold text-sm text-slate-800">Manajemen Transaksi</h2>
+                </div>
+                
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap">
+                    <thead className="bg-slate-50 text-slate-500 text-xs border-b border-slate-100">
+                      <tr>
+                        <th className="px-5 py-3 font-medium">Info Kargo</th>
+                        <th className="px-5 py-3 font-medium">Pemasok & Pembeli</th>
+                        <th className="px-5 py-3 font-medium">Nominal</th>
+                        <th className="px-5 py-3 font-medium text-right">Aksi Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {allOrders.map((o) => (
+                        <tr key={o.id} className="hover:bg-slate-50">
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-mono text-slate-400">#{o.id.slice(0,6)}</span>
+                              <StatusBadge status={o.status} />
+                            </div>
+                            <p className="font-semibold text-slate-800">{o.productName}</p>
+                            <p className="text-xs text-slate-500">{o.totalTon} Ton</p>
+                          </td>
+                          <td className="px-5 py-4 text-xs">
+                            <p><span className="text-slate-400">Jual:</span> <span className="font-medium text-slate-800">{o.farmerName}</span></p>
+                            <p><span className="text-slate-400">Beli:</span> <span className="font-medium text-slate-800">{o.buyerName}</span></p>
+                          </td>
+                          <td className="px-5 py-4 font-bold text-slate-700">Rp {o.totalPrice?.toLocaleString()}</td>
+                          <td className="px-5 py-4 text-right">
+                            {o.status === "CARGO_DELIVERED" && (
+                              <button disabled={loadingId === o.id} onClick={() => handleReleaseEscrow(o)} className="bg-slate-900 text-white px-3 py-1.5 rounded-md text-xs font-medium hover:bg-slate-800">
+                                Cairkan Dana
+                              </button>
+                            )}
+                            {(o.status === "WAITING_PAYMENT_SIMULATION" || o.status === "PAID_ESCROW") && (
+                              <button disabled={loadingId === o.id} onClick={() => handleCancelOrder(o)} className="text-red-600 px-3 py-1.5 rounded-md text-xs font-medium hover:bg-red-50 border border-red-100">
+                                Batal
+                              </button>
+                            )}
+                            {o.status === "ESCROW_RELEASED" && <span className="text-xs text-green-600 font-medium">Selesai</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
-          </div>
-        )}
 
-        {/* =========================================================================
-            TAB 2: VERIFIKASI AKUN PEMASOK (PETANI & MITRA)
-           ========================================================================= */}
-        {activeTab === "users" && (
-          <div className="space-y-6">
-            {/* BOX PENCARIAN & FILTER USER */}
-            <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex flex-col sm:flex-row gap-3">
-              <div className="flex-1 flex items-center gap-2 px-3 bg-slate-900 rounded-xl border border-slate-700">
-                <Search className="w-4 h-4 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Cari nama, email, nomor HP, atau nama bank..."
-                  value={userSearchTerm}
-                  onChange={(e) => setUserSearchTerm(e.target.value)}
-                  className="w-full py-2 bg-transparent text-xs focus:outline-none text-white font-medium"
-                />
-              </div>
-              <select
-                value={filterRole}
-                onChange={(e) => setFilterRole(e.target.value)}
-                className="py-2 px-3 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-slate-200 focus:outline-none cursor-pointer"
-              >
-                <option value="Semua">Semua Pemasok</option>
-                <option value="petani">🌾 Khusus Petani</option>
-                <option value="mitra">🏭 Khusus Mitra Industri</option>
-              </select>
-            </div>
+            {/* TAB: VERIFICATION */}
+            {activeMenu === "verification" && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg">
+                    <Search className="w-4 h-4 text-slate-400" />
+                    <input type="text" placeholder="Cari nama / email..." value={userSearchTerm} onChange={(e) => setUserSearchTerm(e.target.value)} className="w-full text-sm outline-none" />
+                  </div>
+                  <select value={filterRole} onChange={(e) => setFilterRole(e.target.value)} className="py-2 px-3 bg-white border border-slate-200 rounded-lg text-sm outline-none">
+                    <option value="Semua">Semua Role</option><option value="petani">Petani</option><option value="mitra">Mitra</option>
+                  </select>
+                </div>
 
-            {/* DAFTAR PENGGUNA */}
-            {filteredUsers.length === 0 ? (
-              <div className="text-center py-16 bg-slate-800/50 rounded-2xl border border-slate-700 text-slate-400">
-                Belum ada data pengguna yang sesuai dengan filter.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-4">
-                {filteredUsers.map((u) => {
-                  const isProcessing = loadingId === u.id;
-                  const status = u.verificationStatus || "unverified"; // 'unverified' | 'pending' | 'verified' | 'rejected'
-                  const isPetani = u.role === "petani";
-
-                  return (
-                    <div key={u.id} className={`bg-slate-800/70 border rounded-2xl p-5 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${
-                      status === "pending" ? "border-amber-500/80 bg-amber-950/10 shadow-lg shadow-amber-900/10" : "border-slate-700"
-                    }`}>
-                      {/* INFO USER */}
-                      <div className="space-y-2 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded flex items-center gap-1 uppercase ${
-                            isPetani ? "bg-green-900/80 text-green-300 border border-green-700" : "bg-blue-900/80 text-blue-300 border border-blue-700"
-                          }`}>
-                            {isPetani ? <Sprout className="w-3 h-3" /> : <Factory className="w-3 h-3" />} {u.role}
-                          </span>
-
-                          <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full border ${
-                            status === "verified" ? "bg-green-950 text-green-400 border-green-600" :
-                            status === "pending" ? "bg-amber-950 text-amber-400 border-amber-500 animate-pulse" :
-                            status === "rejected" ? "bg-rose-950 text-rose-400 border-rose-600" :
-                            "bg-slate-900 text-slate-400 border-slate-700"
-                          }`}>
-                            {status === "verified" ? "✔ Terverifikasi (Siap Jual)" :
-                             status === "pending" ? "⏳ Menunggu Verifikasi" :
-                             status === "rejected" ? "❌ Ditolak Admin" : "⚪ Belum Mengajukan"}
-                          </span>
-                        </div>
-
-                        <div>
-                          <h3 className="text-lg font-black text-white">{u.displayName || "Tanpa Nama"}</h3>
-                          <p className="text-xs text-slate-400 font-mono">{u.email}</p>
-                        </div>
-
-                        {/* DATA PROFIL & REKENING (YANG DIPERIKSA ADMIN) */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-700/60 text-xs">
-                          <div className="flex items-center gap-1.5 text-slate-300">
-                            <Phone className="w-3.5 h-3.5 text-green-400 shrink-0" />
-                            <span className="truncate">{u.phone || "HP belum diisi"}</span>
+                <div className="grid grid-cols-1 gap-4">
+                  {filteredUsers.map((u) => {
+                    const status = u.verificationStatus || "unverified";
+                    return (
+                      <div key={u.id} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
+                        
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
+                          {/* Nama & Role */}
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] uppercase font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded flex items-center gap-1">
+                                {u.role === "petani" ? <Sprout className="w-3 h-3"/> : <Factory className="w-3 h-3"/>} {u.role}
+                              </span>
+                            </div>
+                            <p className="font-semibold text-slate-800 text-sm">{u.displayName}</p>
+                            <p className="text-xs text-slate-500">{u.email}</p>
                           </div>
-                          <div className="flex items-center gap-1.5 text-slate-300">
-                            <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                            <span className="truncate">{u.alamat_lahan || "Alamat belum diisi"}</span>
+
+                          {/* Kontak */}
+                          <div className="text-xs text-slate-600 space-y-1">
+                            <p className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5 text-slate-400"/> {u.phone || "-"}</p>
+                            <p className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 text-slate-400"/> <span className="truncate w-32">{u.alamat_lahan || "-"}</span></p>
                           </div>
-                          <div className="flex items-center gap-1.5 text-amber-300 font-semibold bg-slate-900/80 px-2 py-1 rounded border border-slate-700">
-                            <CreditCard className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                            <span className="truncate">{u.rekening_bank || "Rekening belum diisi"}</span>
+
+                          {/* Rekening & Status */}
+                          <div className="text-xs space-y-1">
+                            <p className="flex items-center gap-1.5 font-medium text-slate-800 bg-slate-50 p-1.5 rounded border border-slate-100"><CreditCard className="w-3.5 h-3.5 text-blue-500"/> {u.rekening_bank || "Belum ada rekening"}</p>
+                            <p className="text-[10px] font-bold mt-1">Status: {status === "pending" ? <span className="text-amber-600">Menunggu</span> : status === "verified" ? <span className="text-green-600">Tembus</span> : <span className="text-slate-400">Belum / Ditolak</span>}</p>
                           </div>
                         </div>
+
+                        {/* Actions */}
+                        <div className="flex md:flex-col gap-2 w-full md:w-auto shrink-0">
+                          {status !== "verified" && (
+                            <button disabled={loadingId === u.id || !u.rekening_bank} onClick={() => handleVerifyUser(u, "verified")} className="w-full bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-slate-800 disabled:opacity-50">Setujui</button>
+                          )}
+                          {status !== "rejected" && (
+                            <button disabled={loadingId === u.id} onClick={() => handleVerifyUser(u, "rejected")} className="w-full border border-slate-200 text-red-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-50">Tolak</button>
+                          )}
+                        </div>
+
                       </div>
-
-                      {/* TOMBOL AKSI VERIFIKASI */}
-                      <div className="flex sm:flex-col gap-2 w-full md:w-auto border-t md:border-t-0 pt-3 md:pt-0 border-slate-700/60">
-                        {status !== "verified" && (
-                          <button
-                            disabled={isProcessing || !u.rekening_bank}
-                            onClick={() => handleVerifyUser(u, "verified")}
-                            title={!u.rekening_bank ? "User belum mengisi rekening bank" : "Verifikasi Akun"}
-                            className="flex-1 md:w-40 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-black px-3 py-2 rounded-xl text-xs transition shadow-md flex items-center justify-center gap-1.5"
-                          >
-                            <UserCheck className="w-4 h-4" /> Setujui Verifikasi
-                          </button>
-                        )}
-
-                        {status !== "rejected" && (
-                          <button
-                            disabled={isProcessing}
-                            onClick={() => handleVerifyUser(u, "rejected")}
-                            className="flex-1 md:w-40 bg-slate-800 hover:bg-rose-900/80 text-rose-400 hover:text-white border border-rose-800/60 font-bold px-3 py-2 rounded-xl text-xs transition flex items-center justify-center gap-1.5"
-                          >
-                            <UserX className="w-4 h-4" /> Tolak / Batalkan
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             )}
-          </div>
-        )}
 
-      </main>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

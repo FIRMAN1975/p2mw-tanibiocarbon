@@ -31,7 +31,6 @@ export default function Navbar() {
             {/* Desktop Nav */}
             <div className="hidden md:flex items-center gap-6">
               <Link to="/" className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors">Marketplace</Link>
-              <a href="#" className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors">Tentang Kami</a>
               
               {user ? (
                 <DropdownMenu.Root>
@@ -89,7 +88,6 @@ export default function Navbar() {
         )}
       </nav>
 
-      {/* Global Auth Modal */}
       <AuthModal isOpen={isAuthModalOpen} onOpenChange={setIsAuthModalOpen} />
     </>
   );

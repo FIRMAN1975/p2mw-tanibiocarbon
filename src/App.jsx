@@ -1,16 +1,14 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 
-// Layout & Pages
 import Navbar from "@/components/layout/Navbar";
 import MarketplacePage from "@/pages/MarketplacePage";
 import PetaniPage from "@/pages/PetaniPage";
 import MitraPage from "@/pages/MitraPage";
 import AdminPage from "@/pages/AdminPage";
 
-// Route Guard untuk Dashboard
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, userData, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500">Memuat...</div>;
@@ -19,33 +17,35 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   return children;
 };
 
+// Layout Utama untuk Mengontrol Navbar
+const MainLayout = () => {
+  const location = useLocation();
+  // Deteksi apakah sedang berada di halaman Admin
+  const isAdminRoute = location.pathname.startsWith("/admin");
+
+  return (
+    <div className={`min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col ${isAdminRoute ? "h-screen overflow-hidden" : ""}`}>
+      {/* Navbar Global HANYA muncul jika BUKAN di halaman Admin */}
+      {!isAdminRoute && <Navbar />} 
+      
+      <main className="flex-1 flex flex-col w-full h-full">
+        <Routes>
+          <Route path="/" element={<MarketplacePage />} />
+          <Route path="/petani" element={<ProtectedRoute allowedRoles={["petani"]}><PetaniPage /></ProtectedRoute>} />
+          <Route path="/mitra" element={<ProtectedRoute allowedRoles={["mitra"]}><MitraPage /></ProtectedRoute>} />
+          <Route path="/admin" element={<ProtectedRoute allowedRoles={["admin"]}><AdminPage /></ProtectedRoute>} />
+        </Routes>
+      </main>
+    </div>
+  );
+};
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        {/* Toaster Modern (Sonner / Hot Toast style) */}
-        <Toaster 
-          position="bottom-right" 
-          toastOptions={{
-            className: 'text-sm font-semibold rounded-xl shadow-lg border border-slate-100',
-            duration: 4000,
-          }} 
-        />
-        
-        <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
-          <Navbar /> {/* Navbar Global */}
-          <main className="flex-1 flex flex-col">
-            <Routes>
-              {/* Marketplace sekarang menjadi Landing Page (Root) */}
-              <Route path="/" element={<MarketplacePage />} />
-              
-              {/* Dashboard Routes (Protected) */}
-              <Route path="/petani" element={<ProtectedRoute allowedRoles={["petani"]}><PetaniPage /></ProtectedRoute>} />
-              <Route path="/mitra" element={<ProtectedRoute allowedRoles={["mitra"]}><MitraPage /></ProtectedRoute>} />
-              <Route path="/admin" element={<ProtectedRoute allowedRoles={["admin"]}><AdminPage /></ProtectedRoute>} />
-            </Routes>
-          </main>
-        </div>
+        <Toaster position="bottom-right" toastOptions={{ duration: 4000 }} />
+        <MainLayout />
       </BrowserRouter>
     </AuthProvider>
   );
