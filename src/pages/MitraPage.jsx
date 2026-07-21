@@ -94,7 +94,45 @@ export default function MitraPage() {
   const handleAjukanVerifikasi = async () => { if (!phone || !rekening || !alamatLahan) return toast.error("Lengkapi data!"); await updateDoc(doc(db, "users", user.uid), { verificationStatus: "pending", updatedAt: serverTimestamp() }); toast.success("Pengajuan dikirim ke Admin!"); };
   const handleSaveProfile = async (e) => { e.preventDefault(); await updateDoc(doc(db, "users", user.uid), { phone, rekening_bank: rekening, alamat_lahan: alamatLahan, lokasi: pinLocation }); toast.success("Profil disimpan!"); };
 
-  const handleBayarEscrow = async (order) => { await updateDoc(doc(db, "orders", order.id), { status: "PAID_ESCROW" }); toast.success("Berhasil bayar ke Escrow!"); };
+  const handleBayarEscrow = async (order) => {
+    // Jika link invoice sudah pernah dibuat sebelumnya, langsung buka tanpa membuat baru
+    if (order.xenditInvoiceUrl) {
+      window.location.href = order.xenditInvoiceUrl;
+      return;
+    }
+
+    const toastId = toast.loading("Membuat Invoice Pembayaran Xendit...");
+    try {
+      // Menggunakan URL resmi Cloud Functions 2nd Gen milik Anda
+      const functionUrl = "https://createxenditinvoice-3y6f5g6cma-uc.a.run.app";
+
+      const response = await fetch(functionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: order.id,
+          buyerEmail: user?.email || "pembeli@tanibiocarbon.com",
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Terjadi kesalahan pada server");
+      }
+
+      if (data.invoiceUrl) {
+        toast.success("Mengarahkan ke halaman pembayaran...", { id: toastId });
+        // Arahkan peramban pengguna ke halaman checkout resmi Xendit!
+        window.location.href = data.invoiceUrl;
+      } else {
+        throw new Error("URL Invoice tidak ditemukan");
+      }
+    } catch (error) {
+      console.error("Payment Gateway Error:", error);
+      toast.error(error.message || "Gagal membuat pembayaran. Coba lagi.", { id: toastId });
+    }
+  };
   const handleTerimaKargo = async (order) => { if (!window.confirm("Kargo sudah tiba di pabrik?")) return; await updateDoc(doc(db, "orders", order.id), { status: "CARGO_DELIVERED" }); toast.success("Kargo Diterima!"); };
   const handleKirimUlasan = async (e) => { e.preventDefault(); await updateDoc(doc(db, "orders", reviewOrder.id), { rating: ratingValue, reviewText }); toast.success("Ulasan disimpan!"); setReviewOrder(null); };
 

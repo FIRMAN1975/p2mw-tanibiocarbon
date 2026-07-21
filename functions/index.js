@@ -1,69 +1,112 @@
-const functions = require("firebase-functions");
+const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
-const { Xendit } = require("xendit-node"); // Perhatikan kurung kurawal di sini
-const cors = require("cors")({ origin: true });
+// --- INI SOLUSINYA: Menggunakan impor modular resmi Firebase Admin terbaru ---
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const axios = require("axios");
 
-// Nyalakan SDK Admin Firebase
 admin.initializeApp();
+// --- Inisialisasi database menggunakan cara baru ---
+const db = getFirestore();
 
-// MASUKKAN API KEY XENDIT SANDBOX KAMU DI SINI
-const XENDIT_SECRET_KEY = "xnd_development_dMkgdK7Rk1AOBVLE0PcgRkBvr2yV1l0KN6lQAW12a2S8sNsDX7A8QMQBpU7I";
+// ⚠️ MASUKKAN SECRET KEY XENDIT ANDA DI BAWAH INI (awalan: xnd_development_...):
+const XENDIT_SECRET_KEY = "xnd_development_JEG1bGTYGuyG80Qdy3cnw7HNVFeEDsDC3lEbXnfcdtUB1s4M02Ai61YtQoylvyw";
 
-// Inisialisasi Xendit versi SDK terbaru
-const xenditClient = new Xendit({ secretKey: XENDIT_SECRET_KEY });
+// --- 1. ENDPOINT: BUAT INVOICE PEMBAYARAN ---
+exports.createXenditInvoice = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
-exports.createEscrowInvoice = functions.https.onRequest((req, res) => {
-  return cors(req, res, async () => {
-    // Pastikan metode request adalah POST
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Metode tidak diizinkan. Gunakan POST." });
+  const { orderId, buyerEmail } = req.body;
+  if (!orderId) return res.status(400).json({ error: "Order ID wajib dikirim" });
+
+  try {
+    // Menggunakan variabel 'db' yang baru
+    const orderRef = db.collection("orders").doc(orderId);
+    const orderSnap = await orderRef.get();
+
+    if (!orderSnap.exists) {
+      return res.status(404).json({ error: "Pesanan tidak ditemukan di database" });
     }
+
+    const orderData = orderSnap.data();
+
+    if (orderData.status !== "WAITING_PAYMENT_SIMULATION") {
+      return res.status(400).json({ error: "Pesanan ini sudah dibayar atau diproses." });
+    }
+
+    const response = await axios.post(
+      "https://api.xendit.co/v2/invoices",
+      {
+        external_id: orderId,
+        amount: orderData.totalPrice,
+        payer_email: buyerEmail || orderData.buyerName,
+        description: `Pembayaran Escrow Kargo: ${orderData.productName} (${orderData.totalTon} Ton)`,
+        invoice_duration: 86400,
+        success_redirect_url: "http://localhost:5173/mitra",
+        failure_redirect_url: "http://localhost:5173/mitra",
+      },
+      {
+        auth: {
+          username: XENDIT_SECRET_KEY,
+          password: "",
+        },
+      }
+    );
+
+    await orderRef.update({
+      xenditInvoiceId: response.data.id,
+      xenditInvoiceUrl: response.data.invoice_url,
+    });
+
+    res.status(200).json({ invoiceUrl: response.data.invoice_url });
+  } catch (error) {
+    console.error("Xendit API Error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Gagal membuat invoice Xendit" });
+  }
+});
+
+// --- 2. ENDPOINT: WEBHOOK OTOMATIS DARI XENDIT ---
+exports.xenditWebhook = onRequest({ cors: false, invoker: "public" }, async (req, res) => {
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+  const xenditEvent = req.body;
+
+  if (xenditEvent.status === "PAID") {
+    const orderId = xenditEvent.external_id;
 
     try {
-      const { orderId, amount, buyerEmail, description } = req.body;
+      console.log(`[WEBHOOK] Menerima sinyal PAID untuk Order ID: ${orderId}`);
 
-      // 1. Validasi Input Dasar
-      if (!orderId || !amount || !buyerEmail) {
-        return res.status(400).json({ error: "Data transaksi tidak lengkap." });
+      // Menggunakan variabel 'db' yang baru
+      const orderRef = db.collection("orders").doc(orderId);
+      const orderSnap = await orderRef.get();
+
+      // 1. CEK DOKUMEN: Jika ini adalah tes dari Dasbor Xendit (ID tidak ada di DB)
+      if (!orderSnap.exists) {
+        console.warn(`[WARNING] Order ID ${orderId} tidak ada di database.`);
+        // LANGSUNG KEMBALIKAN 200 OK AGAR TES XENDIT BERHASIL!
+        return res.status(200).json({
+          status: "SUCCESS_TEST",
+          message: `ID "${orderId}" tidak ada di DB, tapi Webhook berhasil terhubung sempurna!`,
+        });
       }
 
-      // 2. Buat Payload sesuai aturan SDK terbaru
-      const data = {
-        externalId: orderId, // Menggunakan camelCase (externalId) di versi baru
-        amount: Number(amount),
-        payerEmail: buyerEmail,
-        description: description || "Pembayaran Escrow TaniBioCarbon",
-        invoiceDuration: 86400,
-        successRedirectUrl: "http://localhost:5173/mitra?status=success", // camelCase
-        failureRedirectUrl: "http://localhost:5173/mitra?status=failed"    // camelCase
-      };
-
-      // 3. Tembak ke API Xendit menggunakan metode v3 terbaru
-      const responseFromXendit = await xenditClient.Invoice.createInvoice({ data });
-
-      // 4. Catat Transaksi Awal ke Database Firestore (Status: PENDING)
-      await admin.firestore().collection("transactions").doc(orderId).set({
-        orderId: orderId,
-        amount: Number(amount),
-        buyerEmail: buyerEmail,
-        xenditInvoiceId: responseFromXendit.id,
-        invoiceUrl: responseFromXendit.invoiceUrl, // v3 menggunakan invoiceUrl (bukan URL kapital)
-        status: "PENDING_PAYMENT",
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      // 2. Jika dokumen asli ditemukan di Firestore, update statusnya!
+      await orderRef.update({
+        status: "PAID_ESCROW",
+        paidAt: FieldValue.serverTimestamp(), // <-- Menggunakan FieldValue modular
+        paymentChannel: xenditEvent.payment_channel || "Xendit VA",
+        paymentMethod: xenditEvent.payment_method || "BANK_TRANSFER",
       });
 
-      // 5. Kembalikan URL Invoice ke Frontend React
-      return res.status(200).json({
-        message: "Invoice Escrow Berhasil Dibuat",
-        invoiceUrl: responseFromXendit.invoiceUrl
-      });
-
+      res.status(200).json({ message: "Webhook sukses & database diperbarui!" });
     } catch (error) {
-      console.error("Xendit Error Details:", error);
-      return res.status(500).json({
-        error: "Gagal membuat invoice di Xendit",
-        details: error.message
+      console.error("Firestore Webhook Error:", error);
+      res.status(500).json({
+        error: "Gagal mengupdate database",
+        penyebab_asli: error.message || error.toString(),
       });
     }
-  });
+  } else {
+    res.status(200).send("Status bukan PAID, diabaikan.");
+  }
 });
