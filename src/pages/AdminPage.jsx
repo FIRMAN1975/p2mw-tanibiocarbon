@@ -68,14 +68,32 @@ export default function AdminPage() {
   };
 
   const handleReleaseEscrow = async (order) => {
-    if (!window.confirm(`Cairkan Rp ${order.totalPrice?.toLocaleString()} ke ${order.farmerName}?`)) return;
+    if (!window.confirm(`Cairkan sisa dana ke rekening ${order.farmerName}? (Potongan platform 4% otomatis dihitung)`)) return;
     
     setLoadingId(order.id);
-    const toastId = toast.loading("Mencairkan dana...");
+    const toastId = toast.loading("Memproses pencairan lewat Xendit...");
     try {
-      await updateDoc(doc(db, "orders", order.id), { status: "ESCROW_RELEASED", releasedAt: new Date() });
-      toast.success("Dana cair!", { id: toastId });
-    } catch (error) { toast.error("Gagal mencairkan.", { id: toastId }); } 
+      // Menggunakan variabel dari file .env
+      const functionUrl = import.meta.env.VITE_API_RELEASE_ESCROW;
+      if (!functionUrl) throw new Error("URL API Release Escrow belum disetting di .env");
+
+      const response = await fetch(functionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Gagal mencairkan dana");
+      }
+
+      toast.success("Berhasil! Dana sedang ditransfer ke Petani.", { id: toastId });
+    } catch (error) { 
+      console.error("Disbursement Error:", error);
+      toast.error(error.message, { id: toastId }); 
+    } 
     finally { setLoadingId(null); }
   };
 
@@ -311,7 +329,10 @@ export default function AdminPage() {
 
                           {/* Rekening & Status */}
                           <div className="text-xs space-y-1">
-                            <p className="flex items-center gap-1.5 font-medium text-slate-800 bg-slate-50 p-1.5 rounded border border-slate-100"><CreditCard className="w-3.5 h-3.5 text-blue-500"/> {u.rekening_bank || "Belum ada rekening"}</p>
+                            <p className="flex items-center gap-1.5 font-medium text-slate-800 bg-slate-50 p-1.5 rounded border border-slate-100">
+                              <CreditCard className="w-3.5 h-3.5 text-blue-500"/> 
+                              {u.bankDetails ? `${u.bankDetails.bankCode} - ${u.bankDetails.accountNumber}` : "Belum ada rekening"}
+                            </p>
                             <p className="text-[10px] font-bold mt-1">Status: {status === "pending" ? <span className="text-amber-600">Menunggu</span> : status === "verified" ? <span className="text-green-600">Tembus</span> : <span className="text-slate-400">Belum / Ditolak</span>}</p>
                           </div>
                         </div>
@@ -319,7 +340,7 @@ export default function AdminPage() {
                         {/* Actions */}
                         <div className="flex md:flex-col gap-2 w-full md:w-auto shrink-0">
                           {status !== "verified" && (
-                            <button disabled={loadingId === u.id || !u.rekening_bank} onClick={() => handleVerifyUser(u, "verified")} className="w-full bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-slate-800 disabled:opacity-50">Setujui</button>
+                            <button disabled={loadingId === u.id || !u.bankDetails?.accountNumber} onClick={() => handleVerifyUser(u, "verified")} className="w-full bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-slate-800 disabled:opacity-50">Setujui</button>
                           )}
                           {status !== "rejected" && (
                             <button disabled={loadingId === u.id} onClick={() => handleVerifyUser(u, "rejected")} className="w-full border border-slate-200 text-red-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-50">Tolak</button>

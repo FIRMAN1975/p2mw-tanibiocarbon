@@ -1,14 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
-// --- INI SOLUSINYA: Menggunakan impor modular resmi Firebase Admin terbaru ---
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const axios = require("axios");
 
 admin.initializeApp();
-// --- Inisialisasi database menggunakan cara baru ---
 const db = getFirestore();
 
-// ⚠️ MASUKKAN SECRET KEY XENDIT ANDA DI BAWAH INI (awalan: xnd_development_...):
+// ⚠️ MASUKKAN SECRET KEY XENDIT ANDA DI SINI:
 const XENDIT_SECRET_KEY = "xnd_development_JEG1bGTYGuyG80Qdy3cnw7HNVFeEDsDC3lEbXnfcdtUB1s4M02Ai61YtQoylvyw";
 
 // --- 1. ENDPOINT: BUAT INVOICE PEMBAYARAN ---
@@ -19,7 +17,6 @@ exports.createXenditInvoice = onRequest({ cors: true, invoker: "public" }, async
   if (!orderId) return res.status(400).json({ error: "Order ID wajib dikirim" });
 
   try {
-    // Menggunakan variabel 'db' yang baru
     const orderRef = db.collection("orders").doc(orderId);
     const orderSnap = await orderRef.get();
 
@@ -75,25 +72,20 @@ exports.xenditWebhook = onRequest({ cors: false, invoker: "public" }, async (req
 
     try {
       console.log(`[WEBHOOK] Menerima sinyal PAID untuk Order ID: ${orderId}`);
-
-      // Menggunakan variabel 'db' yang baru
       const orderRef = db.collection("orders").doc(orderId);
       const orderSnap = await orderRef.get();
 
-      // 1. CEK DOKUMEN: Jika ini adalah tes dari Dasbor Xendit (ID tidak ada di DB)
       if (!orderSnap.exists) {
         console.warn(`[WARNING] Order ID ${orderId} tidak ada di database.`);
-        // LANGSUNG KEMBALIKAN 200 OK AGAR TES XENDIT BERHASIL!
         return res.status(200).json({
           status: "SUCCESS_TEST",
           message: `ID "${orderId}" tidak ada di DB, tapi Webhook berhasil terhubung sempurna!`,
         });
       }
 
-      // 2. Jika dokumen asli ditemukan di Firestore, update statusnya!
       await orderRef.update({
         status: "PAID_ESCROW",
-        paidAt: FieldValue.serverTimestamp(), // <-- Menggunakan FieldValue modular
+        paidAt: FieldValue.serverTimestamp(),
         paymentChannel: xenditEvent.payment_channel || "Xendit VA",
         paymentMethod: xenditEvent.payment_method || "BANK_TRANSFER",
       });
@@ -108,5 +100,77 @@ exports.xenditWebhook = onRequest({ cors: false, invoker: "public" }, async (req
     }
   } else {
     res.status(200).send("Status bukan PAID, diabaikan.");
+  }
+});
+
+// --- 3. ENDPOINT: PENCAIRAN DANA KE PETANI (DISBURSEMENT) ---
+exports.releaseEscrow = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+  const { orderId } = req.body;
+  if (!orderId) return res.status(400).json({ error: "Order ID wajib dikirim" });
+
+  try {
+    const orderRef = db.collection("orders").doc(orderId);
+    const orderSnap = await orderRef.get();
+
+    if (!orderSnap.exists) {
+      return res.status(404).json({ error: "Pesanan tidak ditemukan" });
+    }
+
+    const orderData = orderSnap.data();
+
+    if (orderData.status !== "PAID_ESCROW" && orderData.status !== "CARGO_ARRIVED" && orderData.status !== "CARGO_DELIVERED") {
+      return res.status(400).json({ error: "Pesanan belum siap dicairkan" });
+    }
+
+    // PERBAIKAN: Menggunakan farmerId
+    const sellerRef = db.collection("users").doc(orderData.farmerId);
+    const sellerSnap = await sellerRef.get();
+    const sellerData = sellerSnap.data();
+
+    if (!sellerData || !sellerData.bankDetails) {
+      return res.status(400).json({ error: "Petani belum mengatur rekening pencairan!" });
+    }
+
+    const { bankCode, accountName, accountNumber } = sellerData.bankDetails;
+
+    // Hitung Potongan Komisi (Platform ambil 4%)
+    const grossAmount = orderData.totalPrice;
+    const platformFee = Math.floor(grossAmount * 0.04);
+    const netAmount = grossAmount - platformFee;
+
+    console.log(`Mencairkan Rp${netAmount} ke ${bankCode} ${accountNumber} (${accountName})`);
+
+    const response = await axios.post(
+      "https://api.xendit.co/disbursements",
+      {
+        external_id: `disb_${orderId}`,
+        amount: netAmount,
+        bank_code: bankCode,
+        account_holder_name: accountName,
+        account_number: accountNumber,
+        description: `Pencairan Escrow TaniBioCarbon - Pesanan ${orderId}`,
+      },
+      {
+        auth: {
+          username: XENDIT_SECRET_KEY,
+          password: "",
+        },
+      }
+    );
+
+    await orderRef.update({
+      status: "ESCROW_RELEASED", // Disesuaikan dengan status di frontend Anda
+      disbursementId: response.data.id,
+      platformFee: platformFee,
+      netAmountToSeller: netAmount,
+      releasedAt: FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({ message: "Berhasil mencairkan dana!", disbursement: response.data });
+  } catch (error) {
+    console.error("Xendit Disbursement Error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Gagal mencairkan dana", detail: error.response?.data || error.message });
   }
 });
