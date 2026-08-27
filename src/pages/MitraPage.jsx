@@ -52,6 +52,7 @@ export default function MitraPage() {
   
   const [phone, setPhone] = useState(""); const [alamatLahan, setAlamatLahan] = useState(""); const [bankDetails, setBankDetails] = useState({ bankCode: "BCA", accountName: "", accountNumber: "" });
 
+  const [isCheckingBank, setIsCheckingBank] = useState(false); // STATE BARU UNTUK CEK REKENING
   const notifiedOrders = useRef(new Set());
 
   useEffect(() => {
@@ -76,12 +77,34 @@ export default function MitraPage() {
     });
   }, [buyerOrders, sellerOrders, user?.uid, chatOrder]);
 
-  const handleAjukanVerifikasi = async () => { if (!phone || !bankDetails.accountNumber || !bankDetails.accountName || !alamatLahan) return toast.error("Lengkapi data profil!"); await updateDoc(doc(db, "users", user.uid), { verificationStatus: "pending", updatedAt: serverTimestamp() }); toast.success("Pengajuan dikirim!"); };
-  const handleSaveProfile = async (e) => { e.preventDefault(); await updateDoc(doc(db, "users", user.uid), { phone, bankDetails, alamat_lahan: alamatLahan, lokasi: pinLocation }); toast.success("Profil disimpan!"); };
+  const handleAjukanVerifikasi = async () => { if (!phone || !bankDetails.accountNumber || !bankDetails.accountName || !alamatLahan) return toast.error("Lengkapi data profil dan pastikan rekening divalidasi!"); await updateDoc(doc(db, "users", user.uid), { verificationStatus: "pending", updatedAt: serverTimestamp() }); toast.success("Pengajuan dikirim!"); };
+  const handleSaveProfile = async (e) => { e.preventDefault(); if(!bankDetails.accountName) return toast.error("Klik tombol Cek Nama Rekening terlebih dahulu!"); await updateDoc(doc(db, "users", user.uid), { phone, bankDetails, alamat_lahan: alamatLahan, lokasi: pinLocation }); toast.success("Profil disimpan!"); };
   const handleBayarEscrow = async (order) => { if (order.xenditInvoiceUrl) return window.location.href = order.xenditInvoiceUrl; const toastId = toast.loading("Membuat Invoice Pembayaran Xendit..."); try { const functionUrl = import.meta.env.VITE_API_CREATE_INVOICE; const response = await fetch(functionUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orderId: order.id, buyerEmail: user?.email }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); window.location.href = data.invoiceUrl; } catch (error) { toast.error(error.message, { id: toastId }); } };
   const handleBatalkanPesanan = async (order) => { if (!window.confirm("Yakin membatalkan pesanan? Stok dikembalikan.")) return; const toastId = toast.loading("Membatalkan..."); try { await updateDoc(doc(db, "orders", order.id), { status: "CANCELLED" }); const productRef = doc(db, "products", order.productId); const productSnap = await getDoc(productRef); if (productSnap.exists()) { await updateDoc(productRef, { berat_ton: (productSnap.data().berat_ton || 0) + order.totalTon, status: "tersedia" }); } toast.success("Pesanan dibatalkan.", { id: toastId }); } catch (error) { toast.error("Gagal batal.", { id: toastId }); } };
   const handleTerimaKargo = async (order) => { if (!window.confirm("Kargo tiba sesuai pesanan? Uang diteruskan.")) return; await updateDoc(doc(db, "orders", order.id), { status: "CARGO_DELIVERED" }); toast.success("Kargo Diterima!"); };
   const handleKirimUlasan = async (e) => { e.preventDefault(); await updateDoc(doc(db, "orders", reviewOrder.id), { rating: ratingValue, reviewText }); toast.success("Ulasan disimpan!"); setReviewOrder(null); };
+
+  const handleCheckBank = async () => {
+    if (!bankDetails.bankCode || !bankDetails.accountNumber) return toast.error("Pilih bank dan isi nomor rekening!");
+    setIsCheckingBank(true);
+    const toastId = toast.loading("Memvalidasi nomor rekening...");
+    try {
+      const functionUrl = import.meta.env.VITE_API_CHECK_BANK;
+      const response = await fetch(functionUrl, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bankCode: bankDetails.bankCode, accountNumber: bankDetails.accountNumber })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Rekening tidak valid");
+      setBankDetails({ ...bankDetails, accountName: data.accountName });
+      toast.success(`Rekening Valid: ${data.accountName}`, { id: toastId });
+    } catch (error) {
+      toast.error(error.message, { id: toastId });
+      setBankDetails({ ...bankDetails, accountName: "" });
+    } finally {
+      setIsCheckingBank(false);
+    }
+  };
 
   const handleFileSelect = (e) => { const reader = new FileReader(); reader.addEventListener("load", () => { setCurrentImageSrc(reader.result); setIsCropping(true); setZoom(1); setCrop({ x: 0, y: 0 }); }); reader.readAsDataURL(e.target.files[0]); e.target.value = null; };
   const onCropComplete = useCallback((_, pixels) => setCroppedAreaPixels(pixels), []);
@@ -336,7 +359,7 @@ export default function MitraPage() {
         {/* TAB 5: DOMPET */}
         {activeTab === "dompet" && <WalletDashboard orders={sellerOrders} bankDetails={bankDetails} />}
 
-        {/* TAB 6: PROFIL */}
+        {/* TAB 6: PROFIL & REKENING (UI BARU DENGAN CEK XENDIT) */}
         {activeTab === "profil" && (
           <div className="max-w-2xl mx-auto animate-in fade-in slide-in-from-bottom-2 duration-300">
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
@@ -347,14 +370,51 @@ export default function MitraPage() {
               <form onSubmit={handleSaveProfile} className="space-y-5">
                 <div><label className="block text-sm font-semibold text-slate-900 mb-1.5">No. Telepon Pabrik</label><input type="text" value={phone} onChange={e=>setPhone(e.target.value)} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"/></div>
                 <div><label className="block text-sm font-semibold text-slate-900 mb-1.5">Alamat Gudang</label><input type="text" value={alamatLahan} onChange={e=>setAlamatLahan(e.target.value)} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"/></div>
+                
+                {/* UI REKENING BARU */}
                 <div className="bg-slate-50 p-4 border border-slate-200 rounded-xl space-y-4">
                   <h4 className="font-bold text-sm text-slate-800">Detail Rekening Pencairan</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div><label className="block text-xs font-semibold text-slate-700 mb-1">Nama Bank</label><select value={bankDetails.bankCode} onChange={e=>setBankDetails({...bankDetails, bankCode: e.target.value})} className="w-full p-3 border rounded-lg outline-none"><option value="BCA">BCA</option><option value="MANDIRI">Mandiri</option><option value="BRI">BRI</option></select></div>
-                    <div><label className="block text-xs font-semibold text-slate-700 mb-1">Nomor Rekening</label><input type="number" value={bankDetails.accountNumber} onChange={e=>setBankDetails({...bankDetails, accountNumber: e.target.value})} className="w-full p-3 border rounded-lg outline-none"/></div>
-                    <div><label className="block text-xs font-semibold text-slate-700 mb-1">Atas Nama (Pemilik)</label><input type="text" value={bankDetails.accountName} onChange={e=>setBankDetails({...bankDetails, accountName: e.target.value})} className="w-full p-3 border rounded-lg outline-none"/></div>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                    
+                    <div className="md:col-span-4">
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Bank</label>
+                      <select value={bankDetails.bankCode} onChange={e=>setBankDetails({...bankDetails, bankCode: e.target.value, accountName: ""})} className="w-full p-3 border rounded-lg outline-none bg-white">
+                        <optgroup label="Bank Nasional">
+                          <option value="BCA">BCA (Bank Central Asia)</option>
+                          <option value="MANDIRI">Bank Mandiri</option>
+                          <option value="BRI">BRI (Bank Rakyat Indonesia)</option>
+                          <option value="BNI">BNI (Bank Negara Indonesia)</option>
+                          <option value="BSI">BSI (Bank Syariah Indonesia)</option>
+                          <option value="CIMB">CIMB Niaga</option>
+                        </optgroup>
+                        <optgroup label="Bank Digital">
+                          <option value="JAGO">Bank Jago</option>
+                          <option value="SEABANK">SeaBank</option>
+                          <option value="BTPN">Jenius / BTPN</option>
+                        </optgroup>
+                      </select>
+                    </div>
+
+                    <div className="md:col-span-4">
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Nomor Rekening</label>
+                      <input type="number" value={bankDetails.accountNumber} onChange={e=>setBankDetails({...bankDetails, accountNumber: e.target.value, accountName: ""})} placeholder="No rekening..." className="w-full p-3 border rounded-lg outline-none"/>
+                    </div>
+
+                    <div className="md:col-span-4">
+                      <button type="button" onClick={handleCheckBank} disabled={isCheckingBank || !bankDetails.accountNumber} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-bold p-3 rounded-lg text-sm transition-colors">
+                        {isCheckingBank ? "Mengecek..." : "Cek Nama Rekening"}
+                      </button>
+                    </div>
+
+                    <div className="md:col-span-12">
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Atas Nama (Sistem akan menarik nama otomatis)</label>
+                      <input type="text" value={bankDetails.accountName} readOnly placeholder="Nama akan muncul setelah diklik tombol Cek" className="w-full p-3 border border-slate-200 rounded-lg outline-none bg-slate-100 text-slate-700 font-bold cursor-not-allowed"/>
+                    </div>
+
                   </div>
                 </div>
+                {/* AKHIR UI REKENING BARU */}
+
                 <div className="pt-4 flex gap-4"><button type="submit" className="flex-1 bg-white border font-bold py-3.5 rounded-xl">Simpan Data</button>{!isVerified && <button type="button" onClick={handleAjukanVerifikasi} className="flex-1 bg-slate-900 text-white font-bold py-3.5 rounded-xl">Ajukan Verifikasi</button>}</div>
               </form>
             </div>
@@ -362,7 +422,38 @@ export default function MitraPage() {
         )}
       </main>
 
-      {/* RENDER SEMUA MODAL FASE 1, 2, DAN 3 */}
+      {/* MODAL CROPPER FOTO */}
+      {isCropping && currentImageSrc && (
+        <div className="fixed inset-0 z-[999] bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-lg overflow-hidden flex flex-col h-[80vh] shadow-2xl">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white z-10">
+              <h3 className="font-bold text-slate-900">Sesuaikan Foto</h3>
+              <button onClick={() => { setIsCropping(false); setCurrentImageSrc(null); }} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><X className="w-5 h-5 text-slate-500"/></button>
+            </div>
+            <div className="relative flex-1 bg-slate-100">
+              <Cropper
+                image={currentImageSrc}
+                crop={crop}
+                zoom={zoom}
+                aspect={4 / 3}
+                onCropChange={setCrop}
+                onCropComplete={onCropComplete}
+                onZoomChange={setZoom}
+              />
+            </div>
+            <div className="p-5 bg-white border-t border-slate-100 z-10 space-y-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-bold text-slate-500">Zoom</span>
+                <input type="range" value={zoom} min={1} max={3} step={0.1} onChange={(e) => setZoom(e.target.value)} className="w-full accent-slate-900" />
+              </div>
+              <button type="button" onClick={handleSaveCrop} className="w-full bg-slate-900 text-white font-bold py-3.5 rounded-xl shadow-lg hover:bg-slate-800 transition-colors">
+                Simpan Potongan Foto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <InputOngkirModal order={ongkirOrder} onClose={() => setOngkirOrder(null)} />
       <ShippingProofModal order={shippingOrder} onClose={() => setShippingOrder(null)} />
       <NegoOngkirModal order={negoOrder} onClose={() => setNegoOrder(null)} />

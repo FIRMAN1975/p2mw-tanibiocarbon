@@ -6,7 +6,7 @@ const axios = require("axios");
 admin.initializeApp();
 const db = getFirestore();
 
-// ⚠️ MASUKKAN SECRET KEY XENDIT ANDA DI SINI:
+// ⚠️ Secret Key Xendit Anda (Hati-hati, kunci ini bersifat sangat rahasia)
 const XENDIT_SECRET_KEY = "xnd_development_JEG1bGTYGuyG80Qdy3cnw7HNVFeEDsDC3lEbXnfcdtUB1s4M02Ai61YtQoylvyw";
 
 // --- 1. ENDPOINT: BUAT INVOICE PEMBAYARAN ---
@@ -38,8 +38,8 @@ exports.createXenditInvoice = onRequest({ cors: true, invoker: "public" }, async
         payer_email: buyerEmail || orderData.buyerName,
         description: `Pembayaran Escrow Kargo: ${orderData.productName} (${orderData.totalTon} Ton)`,
         invoice_duration: 86400,
-        success_redirect_url: "http://localhost:5173/mitra",
-        failure_redirect_url: "http://localhost:5173/mitra",
+        success_redirect_url: "https://tanibiocarbon-323eb.web.app/mitra",
+        failure_redirect_url: "https://tanibiocarbon-323eb.web.app/mitra",
       },
       {
         auth: {
@@ -124,7 +124,6 @@ exports.releaseEscrow = onRequest({ cors: true, invoker: "public" }, async (req,
       return res.status(400).json({ error: "Pesanan belum siap dicairkan" });
     }
 
-    // PERBAIKAN: Menggunakan farmerId
     const sellerRef = db.collection("users").doc(orderData.farmerId);
     const sellerSnap = await sellerRef.get();
     const sellerData = sellerSnap.data();
@@ -161,7 +160,7 @@ exports.releaseEscrow = onRequest({ cors: true, invoker: "public" }, async (req,
     );
 
     await orderRef.update({
-      status: "ESCROW_RELEASED", // Disesuaikan dengan status di frontend Anda
+      status: "ESCROW_RELEASED",
       disbursementId: response.data.id,
       platformFee: platformFee,
       netAmountToSeller: netAmount,
@@ -172,5 +171,45 @@ exports.releaseEscrow = onRequest({ cors: true, invoker: "public" }, async (req,
   } catch (error) {
     console.error("Xendit Disbursement Error:", error.response?.data || error.message);
     res.status(500).json({ error: "Gagal mencairkan dana", detail: error.response?.data || error.message });
+  }
+});
+
+
+// --- 4. ENDPOINT BARU: VALIDASI NAMA REKENING BANK ---
+exports.checkBankAccount = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+  const { bankCode, accountNumber } = req.body;
+  if (!bankCode || !accountNumber) {
+    return res.status(400).json({ error: "Kode bank dan nomor rekening wajib diisi" });
+  }
+
+  try {
+    const response = await axios.post(
+      "https://api.xendit.co/bank_account_data_requests",
+      {
+        bank_code: bankCode,
+        bank_account_number: accountNumber
+      },
+      {
+        auth: {
+          username: XENDIT_SECRET_KEY,
+          password: ""
+        }
+      }
+    );
+
+    // Xendit biasanya mengembalikan status COMPLETED atau PENDING.
+    // Jika PENDING tapi bank_account_name sudah terisi, kita langsung tangkap.
+    const accountName = response.data.bank_account_name;
+    
+    if (accountName) {
+      return res.status(200).json({ accountName: accountName });
+    } else {
+      return res.status(400).json({ error: "Rekening tidak ditemukan atau tidak valid" });
+    }
+  } catch (error) {
+    console.error("Xendit Check Bank Error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Gagal mengecek rekening. Pastikan nomor benar." });
   }
 });
